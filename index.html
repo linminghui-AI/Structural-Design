@@ -101,8 +101,12 @@
 <div id="app">
   <div class="page active" id="page-param">
     <div class="title-bar">混凝土框架设计估算</div>
-    <div class="card" style="padding:4px;">
-      <div id="view3d" style="width:100%;height:300px;background:var(--blue-lt);border-radius:6px;cursor:grab;position:relative;overflow:hidden;touch-action:none;"><span class="hint" style="position:absolute;top:4px;left:8px;z-index:5;pointer-events:none;">3D轴网 旋转缩放 点击构件</span></div>
+    <div class="card" style="padding:4px;position:relative;">
+      <div id="view3d" style="width:100%;height:300px;background:var(--blue-lt);border-radius:6px;cursor:grab;overflow:hidden;touch-action:none;"><span class="hint" style="position:absolute;top:4px;left:8px;z-index:5;pointer-events:none;">3D轴网 旋转缩放 点击构件</span></div>
+      <div style="position:absolute;bottom:12px;left:12px;z-index:20;display:flex;flex-direction:column;gap:2px;">
+        <button onclick="zoom3D(1)" style="width:28px;height:28px;border:1px solid #bbb;background:white;border-radius:4px;font-size:16px;line-height:1;cursor:pointer;padding:0;" title="放大">+</button>
+        <button onclick="zoom3D(-1)" style="width:28px;height:28px;border:1px solid #bbb;background:white;border-radius:4px;font-size:16px;line-height:1;cursor:pointer;padding:0;" title="缩小">−</button>
+      </div>
     </div>
     <div style="font-size:11px;text-align:center;color:var(--blue);margin:2px 0;" id="p1-selected"></div>
     <div class="card" id="card-grid">
@@ -220,79 +224,93 @@ let state, scene, camera, renderer, raycaster, mouse, threeMeshes, selected3D;
 let orbitTarget, orbitSpherical, orbitDirty=true, isDragging=false, prevMouse={x:0,y:0};
 
 
-// 《建筑结构静力计算手册》弹性板系数表 (μ=0)
-// 格式: [ax中, ay中, ax支, ay支, β_f]
-// 5种边界类型 × 11档 ly/lx
+// 《静力计算手册》弹性板系数表 (μ=0, D=E·h³/[12(1-ν²)])			——2020版表格			——2020版表格			——2020版表格
+// 格式: [β_f, Mx中, My中, Mx支, My支]  ← 与之前不同: β_f放首位!
+// 6种边界类型, ly/lx = 0.50~1.00 (11档)
 const SLAB_COEF = {
-  // 表1: 四边固结
-  allFixed: {
-    1.00:[0.0176,0.0176,0.0513,0.0513,0.00127],
-    1.10:[0.0198,0.0161,0.0553,0.0493,0.00153],
-    1.20:[0.0217,0.0147,0.0587,0.0471,0.00178],
-    1.30:[0.0235,0.0134,0.0617,0.0453,0.00202],
-    1.40:[0.0251,0.0122,0.0644,0.0437,0.00226],
-    1.50:[0.0265,0.0112,0.0669,0.0423,0.00250],
-    1.60:[0.0277,0.0103,0.0691,0.0410,0.00272],
-    1.70:[0.0287,0.0095,0.0710,0.0398,0.00293],
-    1.80:[0.0297,0.0088,0.0728,0.0387,0.00313],
-    1.90:[0.0305,0.0082,0.0745,0.0377,0.00331],
-    2.00:[0.0312,0.0076,0.0760,0.0368,0.00349]
+  // 表5.2-1: 四边简支
+  allSimple: {
+    0.50:[0.01013,0.0965,0.0174,0,0],
+    0.55:[0.00940,0.0892,0.0210,0,0],
+    0.60:[0.00867,0.0820,0.0242,0,0],
+    0.65:[0.00796,0.0750,0.0271,0,0],
+    0.70:[0.00727,0.0683,0.0296,0,0],
+    0.75:[0.00663,0.0620,0.0317,0,0],
+    0.80:[0.00603,0.0561,0.0334,0,0],
+    0.85:[0.00547,0.0506,0.0348,0,0],
+    0.90:[0.00496,0.0456,0.0358,0,0],
+    0.95:[0.00449,0.0410,0.0364,0,0],
+    1.00:[0.00406,0.0368,0.0368,0,0]
   },
-  // 表2: 三边固结、一长边铰接 (铰接边不参与支座系数)
-  threeFixedLongHinge: {
-    1.00:[0.0227,0.0168,0.0600,0.0550,0.00235],
-    1.10:[0.0257,0.0161,0.0648,0.0532,0.00283],
-    1.20:[0.0284,0.0152,0.0693,0.0512,0.00332],
-    1.30:[0.0309,0.0142,0.0735,0.0494,0.00381],
-    1.40:[0.0332,0.0132,0.0774,0.0478,0.00430],
-    1.50:[0.0353,0.0122,0.0810,0.0463,0.00479],
-    1.60:[0.0371,0.0114,0.0841,0.0449,0.00524],
-    1.70:[0.0387,0.0106,0.0869,0.0436,0.00567],
-    1.80:[0.0402,0.0099,0.0895,0.0424,0.00608],
-    1.90:[0.0415,0.0093,0.0919,0.0413,0.00647],
-    2.00:[0.0426,0.0087,0.0941,0.0403,0.00684]
-  },
-  // 表3: 对边固结、对边铰接
-  oppositeFixed: {
-    1.00:[0.0343,0.0228,0.0744,0.0570,0.00234],
-    1.10:[0.0378,0.0230,0.0798,0.0561,0.00280],
-    1.20:[0.0410,0.0228,0.0850,0.0550,0.00328],
-    1.30:[0.0438,0.0223,0.0898,0.0538,0.00376],
-    1.40:[0.0464,0.0216,0.0943,0.0526,0.00424],
-    1.50:[0.0487,0.0208,0.0985,0.0515,0.00472],
-    1.60:[0.0508,0.0200,0.1024,0.0504,0.00518],
-    1.70:[0.0527,0.0192,0.1061,0.0494,0.00562],
-    1.80:[0.0544,0.0184,0.1096,0.0484,0.00604],
-    1.90:[0.0559,0.0177,0.1129,0.0475,0.00644],
-    2.00:[0.0573,0.0170,0.1160,0.0467,0.00683]
-  },
-  // 表4: 邻边固结、邻边铰接 (角部板)
-  adjacentFixed: {
-    1.00:[0.0389,0.0284,0.0850,0.0716,0.00576],
-    1.10:[0.0430,0.0302,0.0908,0.0710,0.00680],
-    1.20:[0.0466,0.0314,0.0962,0.0698,0.00782],
-    1.30:[0.0497,0.0320,0.1012,0.0684,0.00882],
-    1.40:[0.0525,0.0322,0.1058,0.0668,0.00980],
-    1.50:[0.0550,0.0321,0.1100,0.0652,0.01076],
-    1.60:[0.0573,0.0318,0.1138,0.0636,0.01170],
-    1.70:[0.0594,0.0314,0.1172,0.0621,0.01262],
-    1.80:[0.0613,0.0309,0.1203,0.0607,0.01352],
-    1.90:[0.0630,0.0303,0.1231,0.0594,0.01440],
-    2.00:[0.0645,0.0297,0.1257,0.0582,0.01526]
-  },
-  // 表5: 一边固结、三边铰接
+  // 表5.2-2: 一边固支三边简支 (固支边为长边, ly/lx≤1)
   oneFixed: {
-    1.00:[0.0442,0.0343,0.1010,0.0800,0.00940],
-    1.10:[0.0485,0.0378,0.1075,0.0785,0.01080],
-    1.20:[0.0523,0.0407,0.1136,0.0768,0.01216],
-    1.30:[0.0557,0.0428,0.1192,0.0749,0.01348],
-    1.40:[0.0587,0.0442,0.1244,0.0729,0.01476],
-    1.50:[0.0614,0.0450,0.1292,0.0709,0.01600],
-    1.60:[0.0639,0.0455,0.1336,0.0690,0.01720],
-    1.70:[0.0662,0.0457,0.1376,0.0672,0.01838],
-    1.80:[0.0683,0.0457,0.1413,0.0655,0.01952],
-    1.90:[0.0702,0.0455,0.1447,0.0639,0.02062],
-    2.00:[0.0719,0.0451,0.1478,0.0624,0.02170]
+    0.50:[0.00488,0.0583,0.0060,0.1212,0],
+    0.55:[0.00471,0.0563,0.0081,0.1187,0],
+    0.60:[0.00453,0.0539,0.0104,0.1158,0],
+    0.65:[0.00432,0.0513,0.0126,0.1124,0],
+    0.70:[0.00410,0.0485,0.0148,0.1087,0],
+    0.75:[0.00388,0.0457,0.0168,0.1048,0],
+    0.80:[0.00365,0.0428,0.0187,0.1007,0],
+    0.85:[0.00343,0.0400,0.0204,0.0965,0],
+    0.90:[0.00321,0.0372,0.0219,0.0922,0],
+    0.95:[0.00299,0.0345,0.0232,0.0880,0],
+    1.00:[0.00279,0.0319,0.0243,0.0839,0]
+  },
+  // 表5.2-3: 两对边固定两对边简支
+  oppositeFixed: {
+    0.50:[0.00261,0.0416,0.0017,0.0843,0],
+    0.55:[0.00259,0.0410,0.0028,0.0840,0],
+    0.60:[0.00255,0.0402,0.0042,0.0834,0],
+    0.65:[0.00250,0.0392,0.0057,0.0826,0],
+    0.70:[0.00243,0.0379,0.0072,0.0814,0],
+    0.75:[0.00236,0.0366,0.0088,0.0799,0],
+    0.80:[0.00228,0.0351,0.0103,0.0782,0],
+    0.85:[0.00220,0.0335,0.0118,0.0763,0],
+    0.90:[0.00211,0.0319,0.0133,0.0743,0],
+    0.95:[0.00201,0.0302,0.0146,0.0721,0],
+    1.00:[0.00192,0.0285,0.0158,0.0698,0]
+  },
+  // 表5.2-4: 四边固定
+  allFixed: {
+    0.50:[0.00253,0.0400,0.0038,0.0829,0.0570],
+    0.55:[0.00246,0.0385,0.0056,0.0814,0.0571],
+    0.60:[0.00236,0.0367,0.0076,0.0793,0.0571],
+    0.65:[0.00224,0.0345,0.0095,0.0766,0.0571],
+    0.70:[0.00211,0.0321,0.0113,0.0735,0.0569],
+    0.75:[0.00197,0.0296,0.0130,0.0701,0.0565],
+    0.80:[0.00182,0.0271,0.0144,0.0664,0.0559],
+    0.85:[0.00168,0.0246,0.0156,0.0626,0.0551],
+    0.90:[0.00153,0.0221,0.0165,0.0588,0.0541],
+    0.95:[0.00140,0.0198,0.0172,0.0550,0.0528],
+    1.00:[0.00127,0.0176,0.0176,0.0513,0.0513]
+  },
+  // 表5.2-5: 两邻边固定两邻边简支
+  adjacentFixed: {
+    0.50:[0.00468,0.0559,0.0079,0.1179,0.0786],
+    0.55:[0.00445,0.0529,0.0104,0.1140,0.0785],
+    0.60:[0.00419,0.0496,0.0129,0.1095,0.0782],
+    0.65:[0.00391,0.0461,0.0151,0.1045,0.0777],
+    0.70:[0.00363,0.0426,0.0172,0.0992,0.0770],
+    0.75:[0.00335,0.0390,0.0189,0.0938,0.0760],
+    0.80:[0.00308,0.0356,0.0204,0.0883,0.0748],
+    0.85:[0.00281,0.0322,0.0215,0.0829,0.0733],
+    0.90:[0.00256,0.0291,0.0224,0.0776,0.0716],
+    0.95:[0.00232,0.0261,0.0230,0.0726,0.0698],
+    1.00:[0.00210,0.0234,0.0234,0.0677,0.0677]
+  },
+  // 表5.2-6: 三边固支一边简支 (简支边为长边, ly/lx≤1)
+  threeFixedHinge: {
+    0.50:[0.00257,0.0408,0.0028,0.0836,0.0569],
+    0.55:[0.00252,0.0398,0.0042,0.0827,0.0570],
+    0.60:[0.00245,0.0384,0.0059,0.0814,0.0571],
+    0.65:[0.00237,0.0368,0.0076,0.0796,0.0572],
+    0.70:[0.00227,0.0350,0.0093,0.0774,0.0572],
+    0.75:[0.00216,0.0331,0.0109,0.0750,0.0572],
+    0.80:[0.00205,0.0310,0.0124,0.0722,0.0570],
+    0.85:[0.00193,0.0289,0.0138,0.0693,0.0567],
+    0.90:[0.00181,0.0268,0.0159,0.0663,0.0563],
+    0.95:[0.00169,0.0247,0.0160,0.0631,0.0558],
+    1.00:[0.00157,0.0227,0.0168,0.0600,0.0550]
   }
 };
 
@@ -312,18 +330,20 @@ function getCoef(table, ratio){
 }
 
 // 根据边界条件选择表格并查系数
+// 新格式: SLAB_COEF[type][ratio] = [β_f, Mx中, My中, Mx支, My支]
 function slabCoefTable(b, ratio){
   let nFixed=(b.top?1:0)+(b.bot?1:0)+(b.left?1:0)+(b.right?1:0);
   let oppFixed=(b.top&&b.bot)||(b.left&&b.right);
   let adjFixed=(!oppFixed && nFixed>=2 && ((b.top&&b.right)||(b.top&&b.left)||(b.bot&&b.right)||(b.bot&&b.left)));
   let table,typeName;
   if(nFixed===4){table=SLAB_COEF.allFixed;typeName='四边固结';}
-  else if(nFixed===3){table=SLAB_COEF.threeFixedLongHinge;typeName='三固一铰';}
+  else if(nFixed===3){table=SLAB_COEF.threeFixedHinge;typeName='三固一铰';}
   else if(nFixed===2&&oppFixed){table=SLAB_COEF.oppositeFixed;typeName='对固对铰';}
   else if(nFixed===2&&adjFixed){table=SLAB_COEF.adjacentFixed;typeName='邻固邻铰';}
   else if(nFixed===1){table=SLAB_COEF.oneFixed;typeName='一固三铰';}
-  else {table=null;typeName='四边铰接';}
-  let coef=table?getCoef(table,ratio):[0.0420,0.0420,0,0,0.00990];
+  else {table=SLAB_COEF.allSimple;typeName='四边简支';}
+  let coef=table?getCoef(table,ratio):[0.00406,0.0368,0.0368,0,0];
+  // coef = [β_f, Mx中, My中, Mx支, My支]
   return {coef,typeName,table};
 }
 
@@ -445,7 +465,7 @@ function slabCalc(si){
   }else{
     // 双向板查表
     let {coef,typeName}=slabCoefTable(b,ratio);
-    let ax=coef[0],ay=coef[1],axs=coef[2],ays=coef[3],betaDef=coef[4];
+    let betaDef=coef[0],ax=coef[1],ay=coef[2],axs=coef[3],ays=coef[4];
     // Fix: swapped时对调系数方向 (αx=短跨,αy=长跨, 但Mx为X向,My为Y向)
     if(swapped){let t=ax;ax=ay;ay=t;t=axs;axs=ays;ays=t;}
     // 跨中弯矩 (含泊松比 μ=0.2 修正)
@@ -519,7 +539,8 @@ function beamCalc(bi){
   let beamSW=oBeamB*oBeamH*26/1e6;
   let wallW=calcWallLoadVal();
   if(ov&&ov.wallReduction!=null) wallW=wallW*ov.wallReduction/ld.wallReduction;
-  let slabW=calcSlabToBeam(bi);
+  let slabDetail;
+  let slabW;(function(){let r=calcSlabToBeam(bi);slabW=r.total;slabDetail=r.detail;})();
   let wd=slabW+beamSW+wallW;
   let slabTv=getSlabTAt(bi)||g.slabT;
   let slabSW=slabTv*26/1000;
@@ -590,7 +611,8 @@ function beamCalc(bi){
     Asv,stirS:r.stirS,stirD:r.stirD,
     wMax,wOK:Math.max(wMax,wMaxB||0)<=0.3,wMaxB,sigmaSkB,psiB,rhoTeB,d_eqB,csB,AsRef,K_mq,MqB,
     fDef,fLim,defOK:fDef<=fLim,Bs,B,alphaE,rhoB,betaFB:betaF,psiB,
-    formula_M1,formula_Mmid,formula_M2,formula_V
+    formula_M1,formula_Mmid,formula_M2,formula_V,
+    slabDetail
   };
 }
 
@@ -615,26 +637,52 @@ function calcSlabToBeam(beamId){
   let slabTv=getSlabTAt(beamId)||g.slabT;
   let slabSW=slabTv*26/1000;
   let qd=(slabSW+ld.extraDL)*ld.gammaG+ld.liveLL*ld.gammaQ;
-  let total=0;
+  let total=0,detail=[];
   for(let s of slabs){
-    let onBeam=false;
+    let onBeam=false,edgeLabel='';
     let lx=(s.lx/1000),ly=(s.ly/1000);
-    if(bobj.dir==='h'&&Math.abs(bobj.y1-s.y1)<1){onBeam=true;}
-    if(bobj.dir==='v'&&Math.abs(bobj.x1-s.x1)<1){onBeam=true;}
+    if(bobj.dir==='h'){
+      let onTop=Math.abs(bobj.y1-s.y1)<1;
+      let onBot=Math.abs(bobj.y1-(s.y1+s.ly))<1;
+      let xOverlap=bobj.x2>s.x1&&bobj.x1<s.x1+s.lx;
+      if((onTop||onBot)&&xOverlap){onBeam=true;edgeLabel=onTop?'上边':'下边';}
+    }
+    if(bobj.dir==='v'){
+      let onLeft =Math.abs(bobj.x1-s.x1)<1;
+      let onRight=Math.abs(bobj.x1-(s.x1+s.lx))<1;
+      let yOverlap=bobj.y2>s.y1&&bobj.y1<s.y1+s.ly;
+      if((onLeft||onRight)&&yOverlap){onBeam=true;edgeLabel=onLeft?'左边':'右边';}
+    }
     if(!onBeam) continue;
     let ratio=Math.max(lx,ly)/Math.min(lx,ly);
+    let lx2=Math.min(lx,ly),ly2=Math.max(lx,ly),alpha=lx2/(2*ly2);
+    let isShortBeam=(bobj.dir==='h'&&lx<=ly)||(bobj.dir==='v'&&ly<=lx);
+    let contrib=0,formula='';
     if(ratio>3){
-      if(bobj.dir==='h') total+=qd*Math.min(lx,ly)/2;
+      // 单向板：全部荷载传给短向梁，单根50%
+      let totalLoad=qd*lx*ly;
+      let beamLen=(bobj.dir==='h'?lx:ly);
+      if(isShortBeam){contrib=0.5*totalLoad/beamLen;formula='单向板 qd×lx×ly/(2L)';}
+      else {contrib=0;formula='单向板 — 长向梁不受力';}
+    }else if(ratio>2){
+      // 过渡板：短向梁60%总荷载，长向梁40%
+      let totalLoad=qd*lx*ly;
+      let beamLen=(bobj.dir==='h'?lx:ly);
+      if(isShortBeam){contrib=0.3*totalLoad/beamLen;formula='过渡板 短向60%/2';}
+      else {contrib=0.2*totalLoad/beamLen;formula='过渡板 长向40%/2';}
     }else{
-      let lx2=Math.min(lx,ly),ly2=Math.max(lx,ly),alpha=lx2/(2*ly2);
-      if((bobj.dir==='h'&&lx<=ly)||(bobj.dir==='v'&&ly<=lx)){
-        total+=qd*lx2/2*(1-2*alpha*alpha+alpha*alpha*alpha);
+      // 双向板：45°分块法
+      if(isShortBeam){
+        contrib=5*qd*lx2/16;formula='5×qd×lx/16(三角等效)';
       }else{
-        total+=5*qd*lx2/16;
+        contrib=qd*lx2/2*(1-2*alpha*alpha+alpha*alpha*alpha);
+        formula='qd×lx/2×(1−2α²+α³)(梯形等效)';
       }
     }
+    total+=contrib;
+    detail.push({lx,ly,ratio:ratio.toFixed(2),edge:edgeLabel,alpha:ratio>2?'-':alpha.toFixed(2),contrib,formula,qd:qd.toFixed(2)});
   }
-  return total;
+  return {total,detail};
 }
 
 function calcWallLoadVal(){
@@ -670,18 +718,22 @@ function colCalc(ci){
   let slabTv=getSlabTAtCol(ci)||g.slabT;
   let slabSW=slabTv*26/1000;
   let qd=(slabSW+ld.extraDL)*ld.gammaG+ld.liveLL*ld.gammaQ;
-  let tribArea=0;
-  for(let s of slabs){
-    let contributed=false;
+  let tribArea=0,slabDet=[];
+  for(let i=0;i<slabs.length;i++){
+    let s=slabs[i],contributed=false;
     if(Math.abs(s.x1-c.x)<1&&Math.abs(s.y1-c.y)<1) contributed=true;
     if(Math.abs(s.x1+s.lx-c.x)<1&&Math.abs(s.y1-c.y)<1) contributed=true;
     if(Math.abs(s.x1-c.x)<1&&Math.abs(s.y1+s.ly-c.y)<1) contributed=true;
     if(Math.abs(s.x1+s.lx-c.x)<1&&Math.abs(s.y1+s.ly-c.y)<1) contributed=true;
-    if(contributed) tribArea+=s.lx*s.ly*0.25/1e6;
+    if(contributed){
+      let a=s.lx*s.ly*0.25/1e6;
+      tribArea+=a;
+      slabDet.push({id:i+1,lx:s.lx,ly:s.ly,area:a.toFixed(1),contrib:a*qd});
+    }
   }
   let NslabPer=tribArea*qd;
   let Nslab=NslabPer*state.grid.nStories;
-  let beamSWPer=0,wallPer=0;
+  let beamSWPer=0,wallPer=0,beamDet=[];
   let beams=getBeams(state.grid.xSpans,state.grid.ySpans);
   for(let b of beams){
     let near=false;
@@ -693,8 +745,9 @@ function colCalc(ci){
     let L=Math.abs(b.x2-b.x1||b.y2-b.y1)/1000;
     let bov=beamSec(b.id,state.beamFloor||1);
     let bB=bov?bov.b:g.beamB,bH=bov?bov.h:g.beamH;
-    beamSWPer+=bB*bH*26/1e6*L/2;
-    wallPer+=calcWallLoadVal()*L/2;
+    let bsw=bB*bH*26/1e6*L/2, wl=calcWallLoadVal()*L/2;
+    beamSWPer+=bsw;wallPer+=wl;
+    beamDet.push({id:b.id,b:bB,h:bH,L,beamPer:bsw,wallPer:wl});
   }
   let Nbeam=beamSWPer*state.grid.nStories,Nwall=wallPer*state.grid.nStories;
   let NcolPer=oColB*oColH*state.grid.storyH*26/1e9;
@@ -727,7 +780,8 @@ function colCalc(ci){
     NslabPer:NslabPer,beamSWPer,wallPer,NcolPer,NperFloor,floors,
     N:Math.round(N),l0,lambda,phi:phi.toFixed(2),Nu:Math.round(Nu),NuN:(Nu/N).toFixed(2),
     rho:rho.toFixed(2),rhoOK:rho>=0.6&&rho<=5,NuOK:Nu>=N,mu:mu.toFixed(2),muOK:mu<=seismicLimit,seismicLimit,
-    concGrade:g.concGrade,fc:m.fc,A,As:Math.round(As),colB:oColB,colH:oColH,storyH:g.storyH,qd:qd.toFixed(2),seismicGrade:state.seismicGrade
+    concGrade:g.concGrade,fc:m.fc,A,As:Math.round(As),colB:oColB,colH:oColH,storyH:g.storyH,qd:qd.toFixed(2),seismicGrade:state.seismicGrade,
+    slabDet,beamDet
   };
 }
 
@@ -776,6 +830,7 @@ function init3D(){
     orbitSpherical.radius=Math.max(3000,Math.min(30000,orbitSpherical.radius));
     orbitDirty=true;
   },{passive:false});
+  window.zoom3D=function(dir){if(!orbitSpherical) return;orbitSpherical.radius-=dir*2500;orbitSpherical.radius=Math.max(3000,Math.min(30000,orbitSpherical.radius));orbitDirty=true;};
   canvas.addEventListener('touchstart',(e)=>{if(e.touches.length===1){isDragging=true;prevMouse.x=e.touches[0].clientX;prevMouse.y=e.touches[0].clientY;}},{passive:false});
   canvas.addEventListener('touchmove',(e)=>{
     if(!isDragging||e.touches.length!==1) return;
@@ -1528,10 +1583,20 @@ function showCalcReport(type){
       '<tr><td>砼等级</td><td>'+r.concGrade+' fc='+m.fc+' ft='+m.ft+'</td><td>钢筋</td><td>HRB400 fy=360 fyv=360</td></tr>',
       '</table>',
       '<div class="rpt-sec"><b>二、荷载计算</b></div>',
+      '<div style="font-weight:500;margin:4px 0;">2.1 板传来荷载</div>',
       '<table class="rpt-tbl">',
-      '<tr><td>板传来</td><td>'+r.slabW.toFixed(2)+' kN/m</td></tr>',
+      r.slabDetail.map((s,i)=>
+        '<tr><td>板'+(i+1)+'('+s.lx.toFixed(0)+'×'+s.ly.toFixed(0)+'ly/lx='+s.ratio+') '+s.edge+'</td><td>'+s.formula+'='+s.qd+'×'+s.contrib/s.qd+'='+s.contrib.toFixed(2)+' kN/m</td></tr>'
+      ).join(''),
+      '<tr style="font-weight:700"><td>∑ 板传来 slabW</td><td>= '+r.slabW.toFixed(2)+' kN/m</td></tr>',
+      '</table>',
+      '<div style="font-weight:500;margin:4px 0;">2.2 梁自重</div>',
+      '<table class="rpt-tbl">',
       '<tr><td>梁自重</td><td>'+r.beamB+'×'+r.beamH+'×26×10⁻⁶ = <b>'+r.beamSW.toFixed(2)+' kN/m</b></td></tr>',
       '<tr><td>墙线载</td><td>'+r.wallW.toFixed(2)+' kN/m</td></tr>',
+      '</table>',
+      '<div style="font-weight:500;margin:4px 0;">2.3 合计</div>',
+      '<table class="rpt-tbl">',
       '<tr><td>设计荷载 wd</td><td>'+r.slabW.toFixed(2)+'+'+r.beamSW.toFixed(2)+'+'+r.wallW.toFixed(2)+' = <b>'+r.wd.toFixed(2)+' kN/m</b></td></tr>',
       '<tr><td>准永久 wq</td><td><b>'+r.wq.toFixed(2)+' kN/m</b></td></tr>',
       '</table>',
@@ -1591,14 +1656,28 @@ function showCalcReport(type){
       '<tr><td>砼等级</td><td>'+r.concGrade+' fc='+m.fc+'</td><td>层高</td><td>'+g.storyH+' mm</td></tr>',
       '</table>',
       '<div class="rpt-sec"><b>二、荷载来源明细（每层）</b></div>',
+      '<div style="font-weight:500;margin:4px 0;">2.1 楼面荷载</div>',
       '<table class="rpt-tbl">',
       '<tr><td>楼面荷载 qd</td><td>('+slabSW2.toFixed(2)+'+'+ld.extraDL.toFixed(1)+')×'+ld.gammaG.toFixed(1)+'+'+ld.liveLL.toFixed(1)+'×'+ld.gammaQ.toFixed(1)+' = <b>'+qd2.toFixed(2)+' kN/m²</b></td></tr>',
-      '<tr><td>从属面积</td><td>'+r.tribArea.toFixed(1)+' m² （4角各1/4板面积之和）</td></tr>',
-      '<tr><td>每层楼面贡献</td><td>'+r.tribArea.toFixed(1)+' × '+qd2.toFixed(2)+' = <b>'+Math.round(r.NslabPer)+' kN</b></td></tr>',
-      '<tr><td>每层梁重贡献</td><td>邻接梁半跨自重和 = <b>'+Math.round(r.beamSWPer)+' kN</b></td></tr>',
-      '<tr><td>每层墙载贡献</td><td>邻接梁半跨墙载和 = <b>'+Math.round(r.wallPer)+' kN</b></td></tr>',
+      r.slabDet.map(s=>
+        '<tr><td>板'+s.id+' × 1/4</td><td>'+s.lx+'×'+s.ly+'×0.25 = '+s.area+' m² → '+s.area+'×'+qd2.toFixed(2)+' = <b>'+Math.round(s.contrib)+' kN</b></td></tr>'
+      ).join(''),
+      '<tr><td>从属面积合计</td><td>'+r.tribArea.toFixed(1)+' m² × '+qd2.toFixed(2)+' = <b>'+Math.round(r.NslabPer)+' kN</b></td></tr>',
+      '</table>',
+      '<div style="font-weight:500;margin:4px 0;">2.2 梁重 + 墙载</div>',
+      '<table class="rpt-tbl">',
+      r.beamDet.map(b=>
+        '<tr><td>梁'+b.id+' L='+b.L.toFixed(0)+'m</td><td>'+b.b+'×'+b.h+'×26/1e6×'+b.L.toFixed(0)+'/2 = <b>'+Math.round(b.beamPer)+' kN</b> + 墙 '+Math.round(b.wallPer)+' kN</td></tr>'
+      ).join(''),
+      '<tr><td>每层梁重合计</td><td><b>'+Math.round(r.beamSWPer)+' kN</b></td><td>墙载合计</td><td><b>'+Math.round(r.wallPer)+' kN</b></td></tr>',
+      '</table>',
+      '<div style="font-weight:500;margin:4px 0;">2.3 柱重</div>',
+      '<table class="rpt-tbl">',
       '<tr><td>每层柱重</td><td>'+r.colB+'×'+r.colH+'×'+g.storyH+'×26/10⁹ = <b>'+Math.round(r.NcolPer)+' kN</b></td></tr>',
-      '<tr><td>每层合计</td><td><b>'+Math.round(r.NperFloor)+' kN/层</b></td></tr>',
+      '</table>',
+      '<div style="font-weight:500;margin:4px 0;">2.4 合计</div>',
+      '<table class="rpt-tbl">',
+      '<tr><td>每层合计</td><td>'+Math.round(r.NslabPer)+'+'+Math.round(r.beamSWPer)+'+'+Math.round(r.wallPer)+'+'+Math.round(r.NcolPer)+' = <b>'+Math.round(r.NperFloor)+' kN/层</b></td></tr>',
       '</table>',
       '<div class="rpt-sec"><b>三、轴力分层累加（自上而下）</b></div>',
       '<table class="rpt-tbl">',
