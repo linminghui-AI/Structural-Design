@@ -212,7 +212,7 @@
   </div>
 </div>
 
-<div class="model" id="popup-modal" onclick="if(event.target===this)closePopup()">
+<div class="model" id="popup-modal" onclick="if(event.target===this&&!popupJustShown)closePopup()">
   <div class="model-box" style="max-width:320px;">
     <div id="popup-content"></div>
   </div>
@@ -876,7 +876,7 @@ function init3D(){
   }catch(e){}
 
   canvas.addEventListener('click',(e)=>{if(!dragMoved)on3DClick(e);dragMoved=false;});
-  canvas.addEventListener('touchend',(e)=>{if(!dragMoved)on3DTouch(e);dragMoved=false;});
+  canvas.addEventListener('touchend',(e)=>{if(!dragMoved){on3DTouch(e);e.preventDefault();}dragMoved=false;});
   window.addEventListener('resize',()=>{
     let el=document.getElementById('view3d');
     if(!el||el.clientWidth===0||!renderer) return;
@@ -1106,6 +1106,8 @@ function show3DEditPopup(obj){
   }
   html+='<div style="text-align:center;margin-top:10px"><button class="btn btn-primary btn-sm" onclick="applyPopup()">应用</button> <button class="btn btn-sm" onclick="closePopup()">取消</button></div>';
   document.getElementById('popup-content').innerHTML=html;
+  window.popupJustShown=true;
+  setTimeout(()=>{window.popupJustShown=false;},400);
   document.getElementById('popup-modal').classList.add('active');
 }
 window.closePopup=function(){document.getElementById('popup-modal').classList.remove('active');};
